@@ -142,11 +142,15 @@ class Client():
             log_parsing_error(addr, msg, "Publish",
                               "Topic is not utf-8 encoded")
             ok = 0
-        print(topic)
         if "+"  in topic:
             log_parsing_error(addr, msg, "Publish", "Contains wildcards")
             ok = 0
-        #or "#" or "$SYS"
+        if "#" in topic:
+            log_parsing_error(addr, msg, "Publish", "Contains wildcards")
+            ok = 0
+        if "$SYS" in topic:
+            log_parsing_error(addr, msg, "Publish", "Contains wildcards")
+            ok = 0
         # Gets packet_id
         if qos == 1 or qos == 2:
             packet_id = int.from_bytes(msg[position:position+2], "big")
