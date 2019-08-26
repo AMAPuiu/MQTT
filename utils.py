@@ -50,7 +50,7 @@ def log_parsing_error(addr, msg, type, error):
     logging.info("{} Malformed packet: {}: {}: {}".format(
         addr, type, error, msg.decode))
 
-def get_field(position, msg, size):
+def get_field(position, msg, size, matters):
     field_length = int.from_bytes(msg[position:(position+size)], "big")
     position += size
     field = msg[position:(position+field_length)]
@@ -59,7 +59,8 @@ def get_field(position, msg, size):
         field = field.decode("utf-8")
     except:
         field = field.decode("cp855")
-        ok=0
+        if matters==1:
+            ok=0
 
     position += field_length
     return position, field, ok
