@@ -159,7 +159,7 @@ class Switcher():
             # Receives pubrel
             msg = client_socket.recv(1024)
             type = (msg[0]) >> 4
-            reserved = ((msg[0]) << 4) >> 4
+            reserved = msg[0] & 15
             if type != 6:
                 errors.append("Pubrel packet wasn't received although Publish happened")
                 log_parsing_error(addr, msg, "Publish", errors)
