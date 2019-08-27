@@ -165,12 +165,12 @@ class Switcher():
                 log_parsing_error(addr, msg, "Publish", errors)
                 return 
             if reserved != 2:
-                errors.append("Invalid flags in fixed header")
+                errors.append("Pubrel: Invalid flags in fixed header")
             if len(msg) != 4:
-                errors.append("Length of received data is bigger than it should be")
+                errors.append("Pubrel: Length of received data is bigger than it should be")
             msg_length = msg[1]
             if msg_length != 2:
-                errors.append("Pubrel:Invalid length")
+                errors.append("Pubrel: Invalid length")
             packet_id_response = int.from_bytes(msg[2:4], "big")
             if packet_id != packet_id_response:
                 errors.append("Pubrel: Packet ids differ")
