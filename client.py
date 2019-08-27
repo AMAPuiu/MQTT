@@ -3,165 +3,154 @@ import logging
 import socket
 
 
-class Client():
+class Switcher():
 
-    def __init__(self, ip=None, port=None):
+    def got_packet(self, type, msg, addr, client_socket):
+        name=return_type(type)
+        method_name="got_" + name
+        method=getattr(self, method_name, lambda: "Invalid")
+        return method(client_socket, addr, msg)
 
-        self.ip = ip
-        self.port = port
-        self.packets = []
-        self.subscribe_topics = []
-        self.publish_topics = []
-        self.unsubscribe_topics = []
-        self.data = []
-        self.password_flag = 0
-        self.password = None
-        self.user_flag = 0
-        self.user = None
-        self.will_flag = 0
-        self.will_topic = None
-        self.will_message = None
-        self.client_id = None
-        self.added_bytes = []
+    def got_connect(self, client_socket, addr, msg):
 
-    def get_remaining_length(self, msg, addr, type, p):
-
-        multiplier = 1
-        value = 0
-        while True:
-            encodedByte = msg[p]
-            value += (encodedByte & 127) * multiplier
-            multiplier *= 128
-            p += 1
-            if multiplier > 128*128*128:
-                log_parsing_error(
-                    addr, msg, type, "Remaining_length is too big")
-                value = -1
-            if (encodedByte & 128) == 0:
-                break
-
-        return value
-
-    def got_connect(self, client_socket, addr, msg, ok):
+        # List of errors that might appear during parsing
+        errors = []
+        # List of extracted data
+        data = []
+        # Checks reserved bites from fixed header
+        reserved = msg[0] & 15
+        if reserved != 0:
+            errors.append("Invalid flags in fixed header")
 
         # Gets remaining_length of packet from fixed header
         position = 1
-        msg_length = self.get_remaining_length(msg, addr, "Connect", position)
+        msg_length = get_remaining_length(msg, errors, position)
         
         if msg_length == -1:
-            return 0
+            log_parsing_error(addr,msg,"Connect",errors)
+            return 
         position+=1
         size = position-1
+
         # Checks if the length of received data is equal to the Remaining_length from fixed header+its size+the first byte
         if msg_length+size+1 != len(msg):
-            log_parsing_error(addr, msg, "Connect",
-                              "Remaining_length != length of packet")
-            self.added_bytes.append(
-                ("Connect", msg, msg[(msg_length+size+1):len(msg)]))
+            errors.append("Remaining_length != length of packet")
 
         # Checks protocol
-        position, self.protocol, worked = get_field(position, msg, 2, 1)
-        if self.protocol != "MQIsdp":
-            log_parsing_error(addr, msg, "Connect", "Wrong protocol")
+        position, protocol, worked = get_field(position, msg, 2, 1)
+        if protocol != "MQIsdp":
+            errors.append("Wrong protocol")
+            log_parsing_error(addr, msg,"Connect",errors)
             send_connack(client_socket, addr, 1)
-            return 0
-
+            return 
+        data.append(("Protocol",protocol))
         # Checks version
-        self.version = msg[position]
+        version = msg[position]
         if msg[position] != 3:
-            log_parsing_error(addr, msg, "Connect", "Wrong protocol version")
+            errors.append("Wrong protocol version")
+            log_parsing_error(addr, msg, "Connect", errors)
             send_connack(client_socket, addr, 1)
-            return 0
+            return 
+        data.append(("Version",version))
         position += 1
-
+        
         # Flags
         flags = msg[position]
-        self.will_flag = (flags >> 2) & 1
-        self.password_flag = (flags >> 6) & 1
-        self.user_flag = (flags >> 7) & 1
+        will_flag = (flags >> 2) & 1
+        password_flag = (flags >> 6) & 1
+        user_flag = (flags >> 7) & 1
         position += 1
-
+        
         # Stores client ID
         position += 2
-        position, self.client_id, worked = get_field(position, msg, 2, 1)
+        position, client_id, worked = get_field(position, msg, 2, 1)
         if worked == 0:
-            log_parsing_error(addr, msg, "Connect",
-                              "Client ID is not utf-8 encoded")
-            ok = 0
+            errors.append("Client ID is not utf-8 encoded")
+        data.append(("Client ID",client_id))
         # Checks if will flag is set
-        if self.will_flag == 1:
-            position, self.will_topic, worked = get_field(
+        if will_flag == 1:
+            position, will_topic, worked = get_field(
                 position, msg, 2, 1)
             if worked == 0:
-                log_parsing_error(addr, msg, "Connect",
-                                  "Will topic is not utf-8 encoded")
-                ok = 0
-            position, self.will_message, worked = get_field(
+                errors.append("Will topic is not utf-8 encoded")
+            position, will_message, worked = get_field(
                 position, msg, 2, 0)
-
+            data.append(("Will topic",will_topic))
+            data.append(("Will message",will_message))
+        user=None
+        password=None
         # Checks if username and password flags are set
-        if (self.password_flag)*(self.user_flag) == 1:
+        if (password_flag)*(user_flag) == 1:
             # Stores username and password
-            position,  self.user, worked = get_field(position, msg, 2, 1)
+            position,  user, worked = get_field(position, msg, 2, 1)
             if worked == 0:
-                log_parsing_error(addr, msg, "Connect",
-                                  "User is not UTF-8 encoded")
-                ok = 0
-            position,  self.password, worked = get_field(position, msg, 2, 0)
-        elif self.user_flag == 1:
-            position,  self.user, worked = get_field(position, msg, 2, 1)
-            if worked == 0:
-                log_parsing_error(addr, msg, "Connect",
-                                  "User is not UTF-8 encoded")
-                ok = 0
-        else:
-            position,  self.password, worked = get_field(position, msg, 2, 0)
-            log_parsing_error(addr, msg, "Connect",
-                              "Password is given, but username is not")
-            ok = 0
+                errors.append("User is not utf-8 encoded")
+            position,  password, worked = get_field(position, msg, 2, 0)
 
+        elif user_flag == 1:
+            position,  user, worked = get_field(position, msg, 2, 1)
+            if worked == 0:
+                errors.append("User is not utf-8 encoded")
+                
+        else:
+            position,  password, worked = get_field(position, msg, 2, 0)
+            errors.append("Password is given, but username is not")
+        data.append(("User",user))
+        data.append(("Password",password))
         # Sends Connack packet with retcode 5
         send_connack(client_socket, addr, 0)
 
-        return ok
+        # Checks if any errors appeared
+        if len(errors)==0:
+            logging.info("{} Connect packet - ok. Data:{}".format(addr, data))
+        else:
+            log_parsing_error(addr,msg,"Connect",errors)
 
-    def got_publish(self, client_socket, addr, msg, qos, ok):
+    def got_publish(self, client_socket, addr, msg):
+
+        # List of errors that might appear during parsing
+        errors = []
+
+        # Gets qos level
+        qos = (msg[0] >> 1) & 3
+        if qos != 0 and qos != 1 and qos != 2:
+            errors.append("Invalid qos level")
 
         # Gets remaining_length of packet from fixed header
         position = 1
-        msg_length = self.get_remaining_length(
-            msg, addr, "Publish", position)
+        msg_length = get_remaining_length(
+            msg, errors, position)
         if msg_length == -1:
-            return 0
+            log_parsing_error(addr,msg,"Publish",errors)
+            return 
         position+=1
         size = position-1
 
         # Gets topic
         position, topic, worked = get_field(position, msg, 2, 1)
         if worked == 0:
-            log_parsing_error(addr, msg, "Publish",
-                              "Topic is not utf-8 encoded")
-            ok = 0
+            errors.append("Topic is not utf-8 encoded")
         if "+"  in topic:
-            log_parsing_error(addr, msg, "Publish", "Contains wildcards")
-            ok = 0
+            errors.append("Contains wildcards:{}".format(topic))
         if "#" in topic:
-            log_parsing_error(addr, msg, "Publish", "Contains wildcards")
-            ok = 0
+            errors.append("Contains wildcards:{}".format(topic))
         if "$SYS" in topic:
-            log_parsing_error(addr, msg, "Publish", "Contains wildcards")
-            ok = 0
+            errors.append("Contains wildcards:{}".format(topic))
+
         # Gets packet_id
         if qos == 1 or qos == 2:
             packet_id = int.from_bytes(msg[position:position+2], "big")
             position += 2
         else:
             packet_id = None
+
         # Gets message
         message = msg[position:len(msg)]
         message = message.decode("cp855")
+
         # Append
-        self.publish_topics.append((topic, qos, message))
+        publish_topic=(topic, qos, message)
+
         # Responds
         if qos == 1:
             send_puback(client_socket, addr, packet_id)
@@ -172,138 +161,181 @@ class Client():
             type = (msg[0]) >> 4
             reserved = ((msg[0]) << 4) >> 4
             if type != 6:
-                log_parsing_error(
-                    addr, msg, "Pubrel", "Pubrel packet wasn't received although Publish happened")
-                self.data.append(msg)
-                return 0
-            self.packets.append(("Pubrel", msg))
+                errors.append("Pubrel packet wasn't received although Publish happened")
+                log_parsing_error(addr, msg, "Publish", errors)
+                return 
             if reserved != 2:
-                log_parsing_error(addr, msg, "Pubrel",
-                                  "Invalid flags in fixed header")
-                ok = 0
+                errors.append("Invalid flags in fixed header")
             if len(msg) != 4:
-                log_parsing_error(
-                    addr, msg, "Pubrel", "Length of received data is bigger than it should be")
-                self.added_bytes.append(("Pubrel", msg, msg[4:len(msg)]))
-                ok = 0
+                errors.append("Length of received data is bigger than it should be")
             msg_length = msg[1]
             if msg_length != 2:
-                log_parsing_error(addr, msg, "Pubrel", "Invalid length")
-                ok = 0
+                errors.append("Pubrel:Invalid length")
             packet_id_response = int.from_bytes(msg[2:4], "big")
             if packet_id != packet_id_response:
-                log_parsing_error(addr, msg, "Pubrel", "Packet ids differ")
-                ok = 0
+                errors.append("Pubrel: Packet ids differ")
             send_pubcomp(client_socket, addr, packet_id_response)
-        return ok
 
-    def got_subscribe(self, client_socket, addr, msg, ok):
+        # Checks if any errors appeared
+        if len(errors)==0:
+            logging.info("{} Publish packet - ok. Packet id:{} Topic:{}".format(addr, packet_id, publish_topic))
+        else:
+            log_parsing_error(addr,msg,"Publish",errors)
+
+    def got_subscribe(self, client_socket, addr, msg):
+
+        # List of errors that might appear during parsing
+        errors = []
+
+        # Checks reserved bites from fixed header
+        reserved = msg[0] & 15
+        if reserved != 2:
+            errors.append("Invalid flags in fixed header")
 
         # Gets remaining_length of packet from fixed header
         position = 1
-        msg_length = self.get_remaining_length(
-            msg, addr, "Subscribe", position)
+        msg_length = get_remaining_length(msg, errors, position)
         if msg_length == -1:
-            return 0
+            log_parsing_error(addr,msg,"Subscribe",errors)
+            return 
         position+=1
         size = position-1
+
         # Checks if the length of received data is equal to the Remaining_length from fixed header+its size+the first byte
         if msg_length+size+1 != len(msg):
-            log_parsing_error(addr, msg, "Subscribe",
-                              "Remaining_length != length of packet")
-            self.added_bytes.append(
-                ("Subscribe", msg, msg[(msg_length+size+1):len(msg)]))
-            ok = 0
+            errors.append("Bytes have been added")
+
         # Gets packet_ID
         packet_ID = int.from_bytes(msg[position:(position+2)], "big")
         position += 2
+
         # Gets topics and qos
+        subscribe_topics = []
         if position == msg_length+size+1:
-            log_parsing_error(addr, msg, "Subscribe", "There are no topics")
-            return 0
+            errors.append("There are no topics")
+            log_parsing_error(addr,msg,"Subscribe",errors)
+            return 
+
         topic = ""
+
         while position != msg_length+size+1:
+
             position, topic, worked = get_field(position, msg, 2, 1)
             if worked == 0:
-                log_parsing_error(addr, msg, "Subscribe",
-                                  "Topic is not utf-8 encoded")
-                ok = 0
-            qos = msg[position] & 3
-            if msg[position] >> 2 != 0:
-                log_parsing_error(addr, msg, "Subscribe",
-                                  "Reserved bytes from qos are malformed")
-                ok = 0
+                errors.append("Topic is not utf-8 encoded")
 
-            self.subscribe_topics.append((topic, qos))
+            qos = msg[position] & 3
+            if (msg[position] >> 2) != 0:
+                errors.append("Reserved bytes from qos are malformed")
+
+            subscribe_topics.append((topic, qos))
 
             if qos != 0 and qos != 1 and qos != 2:
-                log_parsing_error(addr, msg, "Subscribe",
-                                  "Qos is not 0, 1 or 2")
+                errors.append("Qos is not 0, 1 or 2")
                 qos = 0
-                ok = 0
 
             position += 1
             # Sends Suback as respond
             send_suback(client_socket, addr, qos, packet_ID)
-        return ok
 
-    def got_unsubcribe(self, client_socket, addr, msg, ok):
+            # Checks if any errors appeared
+            if len(errors)==0:
+                logging.info("{} Subscribe packet - ok. Packet id:{} Topics:{}".format(addr, packet_ID, subscribe_topics))
+            else:
+                log_parsing_error(addr,msg,"Subscribe",errors)
+                
+        
+
+    def got_unsubcribe(self, client_socket, addr, msg):
+
+        # List of errors that might appear during parsing
+        errors = []
+
+        # Checks reserved bites from fixed header
+        reserved = msg[0] & 15
+        if reserved != 2:
+            errors.append("Invalid flags in fixed header")
 
         # Gets remaining_length of packet from fixed header
         position = 1
-        msg_length = self.get_remaining_length(
-            msg, addr, "Unsubscribe", position)
+        msg_length = get_remaining_length(
+            msg, errors, position)
         if msg_length == -1:
-            return 0
+            log_parsing_error(addr,msg,"Unsubscribe",errors)
+            return 
         position+=1
         size = position-1
+
         # Gets packet-id
         packet_ID = int.from_bytes(msg[position:(position+2)], "big")
         position += 2
+
         # Gets topics
         if position == msg_length+size+1:
-            log_parsing_error(addr, msg, "Unsubscribe", "There are no topics")
-            return 0
+            errors.append("There are no topics")
+
+        unsubscribe_topics = []
         while position != msg_length+size+1:
             position, topic, worked = get_field(position, msg, 2, 1)
             if worked == 0:
-                log_parsing_error(addr, msg, "Unsubscribe",
-                                  "Topic is not utf-8 encoded")
-                ok = 0
-            self.unsubscribe_topics.append(topic)
+                errors.append("Topic is not utf-8 encoded")
+
+        unsubscribe_topics.append(topic)
 
         # Checks if there are bytes that will remain unparsed
         if position < len(msg):
-            log_parsing_error(addr, msg, "Unsubscribe",
-                              "Bytes have been added to the packet")
-            self.added_bytes.append(
-                ("Unsubscribe", msg, msg[position:len(msg)]))
-            ok = 0
-        send_unsuback(client_socket, addr, packet_ID)
-        return ok
+            errors.append("Bytes have been added to the packet")
 
-    def got_pingreq(self, client_socket, addr, msg, ok):
+        send_unsuback(client_socket, addr, packet_ID)
+
+        # Checks if any errors appeared
+        if len(errors)==0:
+            logging.info("{} Unsubscribe packet - ok. Packet id:{} Topics:{}".format(addr, packet_ID, unsubscribe_topics))
+        else:
+            log_parsing_error(addr,msg,"Unsubscribe",errors)
+        
+
+    def got_pingreq(self, client_socket, addr, msg):
+        # List of errors that might appear during parsing
+        errors = []
+
+        # Checks reserved bites from fixed header
+        reserved = msg[0] & 15
+        if reserved != 0:
+            errors.append("Invalid flags in fixed header")
 
         msg_length = msg[1]
         if msg_length != 0:
-            log_parsing_error(addr, msg, "Pingreq", "Invalid length")
-            self.added_bytes.append(("Pingreq", msg, msg[2:len(msg)]))
-            ok = 0
+            errors.append("Invalid length")
+
         send_pingresp(client_socket, addr)
-        return ok
 
-    def got_disconnect(self, client_socket, addr, msg, ok):
+        # Checks if any errors appeared
+        if len(errors)==0:
+            logging.info("{} Pingreq - ok.".format(addr))
+        else:
+            log_parsing_error(addr,msg,"Pingreq",errors)
 
+    def got_disconnect(self, client_socket, addr, msg):
+        # List of errors that might appear during parsing
+        errors = []
+
+        # Checks reserved bites from fixed header
+        reserved = msg[0] & 15
+        if reserved != 0:
+            errors.append("Invalid flags in fixed header")
+        
         if len(msg)>2:
-            log_parsing_error(addr, msg, "Disconnect","Bytes have been added to the packet")
-            self.added_bytes.append(
-                ("Unsubscribe", msg, msg[2:len(msg)]))
-            ok=0
+            errors.append("Bytes have been added to the packet")
         if msg[1]!=0:
-            log_parsing_error(addr, msg, "Disconnect", "Length is too big")
-            ok=0
-        return ok
+            errors.append("Length is too big")
 
-    def log_client(self,addr):
-        logging.info("{} Client disconnected. User:{} Pass:{} Client ID:{} Will topic:{} Will message:{} Good Packets:{} Malformed:{} Added bytes:{} Subscribe:{} Unsubscribe:{} Publish:{}".format(
-                        addr,self.user,self.password,self.client_id,self.will_topic, self.will_message,self.packets,self.data,self.added_bytes,self.subscribe_topics,self.unsubscribe_topics,self.publish_topics))
+        # Checks if any errors appeared
+        if len(errors)==0:
+            logging.info("{} Disconnect - ok.".format(addr))
+        else:
+            log_parsing_error(addr,msg,"Disconnect",errors)
+
+    def got_unknown(self, client_socket, addr, msg):
+        log_parsing_error(addr,msg,"Unknown","Unexpected packet")
+    
